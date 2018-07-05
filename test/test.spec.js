@@ -1,24 +1,23 @@
 'use strict';
 
-const chai = require('chai');
-const http = require('http');
+const expect = require('chai').expect;
+const request = require('request-promise');
 
 
-const expect = chai.expect;
-const options = {
-    host: process.env.HOST || 'localhost',
-    port: process.env.PORT || 3000
-};
+const host = process.env.HOST || 'localhost';
+const port = process.env.PORT || 3000;
+const options = { resolveWithFullResponse: true }; 
 
 describe('Sending a request', () => {
     describe('GET /status', () => {
         options.method = 'GET';
-        options.path = '/status';
+        options.uri = `http://${host}:${port}/status`
         
         it('should return statusCode equal to 200', () => {
-            http.request(options, (res) => {
-                expect(res.statusCode).to.equal(200);
-            });
+            request(options)
+                .then((res) => {
+                    expect(res.statusCode).to.equal(200);
+                });
         });
     });
 });

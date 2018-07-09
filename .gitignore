@@ -3,6 +3,9 @@
 # dependencies
 node_modules
 
+# local caches
+task.db
+
 # misc
 .DS_Store
 .vscode

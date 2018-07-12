@@ -1,43 +1,37 @@
 'use strict';
 
+const fs = require('fs');
+
 const express = require('express');
+const dotenv = require('dotenv');
 const request = require('request-promise');
+const tar = require('tar');
 const S3 = require('aws-sdk/clients/s3');
 
 
 const router = express.Router();
+dotenv.config();
 
 router.post('/', (req, res) => {
-    let body = req.body;
-    if(body.body !== undefined) { 
-        body = body.body;
-    }
+    const { action, task_id, release_id } = req.body;
 
-    const action = body.action;
-    const taskId = body.task_id;
-    const releaseId = body.release_id;
-
-    if (
-        action === undefined
-        || taskId === undefined
-        || releaseId === undefined
-    ) {
+    if (!action || !task_id || !release_id) {
         return res.status(400).json({ 
-            message: 'missing a required field' 
+            message: 'missing a required field'
         });
     }
+
     if (ACTIONS[action] === undefined) {
         const actions = Object.keys(ACTIONS).join(', ');
-
         return res.status(400).json({ 
-            message: `action must be one of: ${actions}` 
+            message: `action must be one of: ${actions}`
         });
     }
 
-    let task = getTask(taskId);
+    let task = getTask(task_id);
     if (task === undefined && action !== 'initialize') {
         return res.status(400).json({ 
-            message: `${taskId} not found. Initialize first`
+            message: `${task_id} not found. Initialize it`
         });
     }
 
@@ -46,24 +40,20 @@ router.post('/', (req, res) => {
     isAllowed = isAllowed || action === 'get_status';
     if (isAllowed === false) {
         return res.status(400).json({ 
-            message: `${action} is not allowed in ${state}`
+            message: `${action} not allowed in ${state}`
         });
     }
 
-    if (action !== 'initialize' && action !== 'get_status') {
-        return ACTIONS[action](taskId, releaseId, res);
+    if (action !== 'get_status' && action !== 'initialize') {
+        ACTIONS[action](task_id, release_id, res);
     }
     
     if (task === undefined && action === 'initialize') {
-        initialize(taskId, releaseId);
-        task = getTask(taskId);    
+        initialize(task_id, release_id);
+        return res.status(200).json(getTask(task_id));  
     }
 
-    if (action === 'get_status') {
-        task = getStatus(taskId);
-    }
-
-    return res.status(200).json({ body: task });
+    return res.status(200).json(get_status(task_id));
 });
 
 // Task cache
@@ -73,92 +63,116 @@ const tasks = {};
 const snapshot = {};
 
 // Constants
-var DATA_SERVICE_API = 'http://localhost:5000';
-var ENDPOINTS = {
+const DATA_SERVICE_API = process.env.DATA_SERVICE_API;
+const ENDPOINTS = {
     study: '/studies',
     participant: '/participants',
+    biospecimen: '/biospecimens',
     diagnosis: '/diagnoses',
     phenotype: '/phenotypes',
     outcome: '/outcomes',
-    sequencing_center: '/sequecing-centers',
-    biospecimen: '/biospecimens',
+    sequencing_center: '/sequencing-centers',
     genomic_file: '/genomic-files'
 };
-var COORDINATOR_API = 'http://localhost:8000';
-var TRANSITIONS = {
+const COORDINATOR_API = process.env.COORDINATOR_API;
+const TRANSITIONS = {
     undefined: 'initialize',
     pending: 'start',
     staged: 'publish'
 };
+const BUCKET = process.env.BUCKET;
+
+/** 
+ * @access public
+ * isSomeUndefined() checks if at least one element is undefined
+ * @param {premitive(s)} ...args
+ * @returns {boolean} 
+ */
+const isSomeUndefined = (...args) => {
+    return args.some((ele) => { return ele === undefined; });
+}
 
 /** 
  * @access public
  * initialize() creates a new task of snapshot
- * @param {string} taskId 
- * @param {string} releaseId 
+ * @param {string} task_id 
+ * @param {string} release_id 
  */
-const initialize = (taskId, releaseId) => {
+const initialize = (task_id, release_id) => {
     const data = {
-        name: 'Snapshot Task',
+        name: 'snapshot task',
         date_submitted: new Date(),
         progress: null,
-        task_id: taskId,
-        release_id: releaseId,
+        task_id,
+        release_id,
         state: 'pending'
     };
-    updateState(taskId, data);
+    updateState(task_id, data);
 };
 
 /** 
  * @access public
- * start() processes a snapshot task
- * @param {string} taskId 
- * @param {string} releaseId 
+ * start() starts the creation of snapshot
+ * @param {string} task_id
+ * @param {string} release_id
+ * @param {Object} context
+ * @returns {Object}
  */
-const start = (taskId, releaseId, context) => {
-    let data = { state: 'running' };
-    updateState(taskId, data);
+const start = (task_id, release_id, context) => {
+    updateState(task_id, { state: 'running' });
+    context.status(200).json(getTask(task_id));
 
-    let task = getTask(taskId); 
-    context.status(200).json({ body: task });
-
-    let next;
     Promise.resolve(() => {
+        let studyIds = [];
         for (let endpoint in ENDPOINTS) {
-            next = endpoint;
-            while (next) {
-                console.log(next);
-                request.get({
-                    uri: DATA_SERVICE_API + next,
-                    qs: { limit: 100 },
-                    json: true
-                }).then((res) => {
-                    const { results, _links } = res;
-                    snapshot[endpoint] = (snapshot[endpoint] || []).concat(results);
-                    next = res._links.next;
-                }).catch((err) => {
-                    data.state = 'failed';
-                    data.err = err.message;
-                    updateState(taskId, data);
+            let next = endpoint;
+            const options = {
+                uri: DATA_SERVICE_API + next,
+                qs: { limit: 100 },
+                json: true
+            };
 
-                    console.error(err.message);
-                });
+            if (endpoint !== 'study') {
+                for (let studyId of studyIds) {
+                    options.study_id = studyId;
+                    while (next) {
+                        request.get(options).then((res) => {
+                            const { results, _links } = res;
+                            snapshot[studyId] = snapshot[studyId] || {};
+                            snapshot[studyId][endpoint] = (
+                                snapshot[studyId][endpoint] || []
+                            ).concat(results);
+                            next = res._links.next;
+                        }).catch((err) => {
+                            updateState(task_id, { state: 'failed'});
+                            console.error(err.message);
+                        });
+                    }
+                }
+            } else {
+                while (next) {
+                    request.get(options).then((res) => {
+                        const { results, _links } = res;
+                        for (let result of results) {
+                            studyIds.push(result.kf_id);
+                        }
+                        next = res._links.next;
+                    }).catch((err) => {
+                        updateState(task_id, { state: 'failed'});
+                        console.error(err.message);
+                    });
+                }
             }
         }
     }).then(() => {
-        data = { progress: 100, state: 'staged' }
         request.patch({
-            uri: `${COORDINATOR_API}/releases/${releaseId}/tasks/${taskId}`,
-            body: data,
+            uri: `${COORDINATOR_API}/releases/${release_id}/tasks/${task_id}`,
+            body: { progress: 100, state: 'staged' },
             json: true
         }).then((res) => {
-            data.state = 'staged';
-            updateState(taskId, data);
+            updateState(task_id, { state: 'staged' });
         }).catch((err) => {
-            data.state = 'pending';
-            data.err = err.message;
-            updateState(taskId, data);
-
+            updateState(task_id, { state: 'pending' });
             console.error(err.message);
         });
     });
@@ -167,87 +181,122 @@ const start = (taskId, releaseId, context) => {
 /** 
  * @access public
  * publish() publishes a staged snapshot task
- * @param {string} taskId 
- * @param {string} releaseId 
+ * @param {string} task_id 
+ * @param {string} release_id
+ * @param {Object} context
+ * @returns {Object}
  */
-const publish = (taskId, releaseId) => {
-    const data = { state: 'publishing' };
-    updateState(taskId, data);
+const publish = (taskId, releaseId, context) => {
+    updateState(taskId, { state: 'publishing' });
+    context.status(200).json(getTask(task_id));
 
-    // tar with Promise
-    next();
-
-    request.patch(
-        `${COORDINATOR_API}/releases/${releaseId}/tasks/${taskId}`,
-        { json: { progress: 100, state: 'published' } },
-        (err, res) => {
-            if (res.statusCode !== 200) {
-                data.state = 'staged';
-                data.err = err.message;
-            } else {
-                data.state = 'published';
-            }
-            updateState(taskId, data);
+    let file = `${release_id}.json`; 
+    const data = JSON.stringify(snapshot);
+    fs.writeFile(file, data, 'utf-8', (err) => {
+        if (err) {
+            updateState(task_id, { state: 'failed' });
+            console.error(err.message);
         }
-    )
+
+        let options = { file: `${release_id}.tar.gz` }
+        tar.c(options, [file], (err) => {
+            if (err) {
+                updateState(task_id, { state: 'failed' });
+                console.error(err.message);
+            }
+
+            file = options.file;
+            fs.readFile(file, (err, data) => {
+                if (err) {
+                    updateState(task_id, { state: 'failed' });
+                    console.error(err.message);
+                }
+
+                const params = { Bucket: BUCKET };
+                const s3 = new S3(params);
+    
+                Object.assign(params, { Key: file, Body: data});
+                s3.putObject(params, (err) => {
+                    if (err) {
+                        updateState(task_id, { state: 'failed' });
+                        console.error(err.message);
+                    }
+
+                    request.patch({
+                        uri: `${COORDINATOR_API}/releases/${release_id}/tasks/${task_id}`,
+                        body: { progress: 100, state: 'published' },
+                        json: true
+                    }).then((res) => {
+                        if (res.statusCode !== 200) {
+                            updateState(taskId, { state: 'staged' });
+                        } else {
+                            updateState(taskId, { state: 'published' });
+                        }
+                    }).catch((err) => {
+                        console.error(err.message);
+                    });
+                });
+            });
+        })
+    });
 };
 
 /** 
  * @access public
  * cancel() terminates a snapshot task
- * @param {string} taskId 
- * @param {string} releaseId 
+ * @param {string} task_id 
+ * @param {string} release_id 
+ * @param {Object} context
+ * @returns {Object}
  */
-const cancel = (taskId, releaseId) => {
-    const data = { state: 'cancelled' };
-    updateState(taskId, data);
+const cancel = (task_id, release_id, context) => {
+    updateState(task_id, { state: 'cancelled' });
+    return context.status(200).json({
+        message: `task ${task_id} is cancelled`
+    })
 };
 
 /** 
  * @access public
- * getStatus() returns a status of snapshot task
- * @param {string} taskId 
+ * get_status() returns a status of snapshot task
+ * @param {string} task_id 
  * @returns {Object}
  */
-const getStatus = (taskId) => { return getTask(taskId); };
+const get_status = (task_id) => { return getTask(task_id); };
 
 /** 
  * @access private
  * getTask() returns snapshot task information
- * @param {string} taskId 
+ * @param {string} task_id 
  * @returns {Object}
  */
-const getTask = (taskId) => { return tasks[taskId]; };
+const getTask = (task_id) => { return tasks[task_id]; };
 
 /** 
  * @access private
  * updateState() updates a state of snapshot task
- * @param {string} taskId 
+ * @param {string} task_id 
  * @param {Object} body
  */
-const updateState = (taskId, body) => {
-    let task = getTask(taskId);
-    if (task === undefined) {
-        task = {};
+const updateState = (task_id, body) => {
+    let task = getTask(task_id);
+    task = task === undefined ? {} : task;
+    
+    //Object.assign(task, body)
+    for (let key in body) { 
+        task[key] = body[key]; 
     }
 
-    for (let key in body) {
-        task[key] = body[key];
-    }
-
-    tasks[taskId] = task;
+    tasks[task_id] = task;
 };
 
 // Routing logic
-var ACTIONS = {
-    initialize: initialize,
-    start: start,
-    publish: publish,
-    get_status: getStatus,
-    cancel: cancel
+const ACTIONS = {
+    initialize,
+    start,
+    publish,
+    get_status,
+    cancel
 };
-
-// S3 bucket name
-var BUCKET = '';
 
 module.exports = router;

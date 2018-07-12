@@ -3,8 +3,8 @@
 # dependencies
 node_modules
 
-# local caches
-task.db
+# environment variables
+.env
 
 # misc
 .DS_Store

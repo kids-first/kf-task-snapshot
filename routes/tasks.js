@@ -3,14 +3,12 @@
 const fs = require('fs');
 
 const express = require('express');
-const dotenv = require('dotenv');
-const request = require('request-promise');
 const tar = require('tar');
 const S3 = require('aws-sdk/clients/s3');
 
 
 const router = express.Router();
-dotenv.config();
+require('dotenv').config();
 
 router.post('/', (req, res) => {
     const { action, task_id, release_id } = req.body;
@@ -178,6 +176,25 @@ const start = (task_id, release_id, context) => {
     });
 };
 
+// forEachAsync
+
+// whileAsync
+
+/** 
+ * @access private
+ * writeFileAsync() writes data on a local disk
+ * @param {Object} options
+ * @returns {Object}
+ */
+const requestAsync = (options) => {
+    return new Promise((resolve, reject) => {
+        request(options, (err, res, data) => {
+            if (err) { reject(err); }
+            else { resolve(data) };
+        });
+    });
+};
+
 /** 
  * @access public
  * publish() publishes a staged snapshot task
@@ -186,58 +203,86 @@ const start = (task_id, release_id, context) => {
  * @param {Object} context
  * @returns {Object}
  */
-const publish = (taskId, releaseId, context) => {
-    updateState(taskId, { state: 'publishing' });
+const publish = (task_id, release_id, context) => {
+    updateState(task_id, { state: 'publishing' });
     context.status(200).json(getTask(task_id));
 
     let file = `${release_id}.json`; 
     const data = JSON.stringify(snapshot);
-    fs.writeFile(file, data, 'utf-8', (err) => {
-        if (err) {
-            updateState(task_id, { state: 'failed' });
-            console.error(err.message);
+    const options = {
+        tar: { file: `${release_id}.tar.gz` },
+        patch: {
+            uri: `/releases/${release_id}/tasks/${task_id}`,
+            baseUrl: COORDINATOR_API,
+            method: 'PATCH',
+            headers: {
+                'content-type': 'application/json'
+            },
+            json: { progress: 100, state: 'staged' }
         }
-
-        let options = { file: `${release_id}.tar.gz` }
-        tar.c(options, [file], (err) => {
-            if (err) {
-                updateState(task_id, { state: 'failed' });
-                console.error(err.message);
-            }
-
-            file = options.file;
-            fs.readFile(file, (err, data) => {
-                if (err) {
-                    updateState(task_id, { state: 'failed' });
-                    console.error(err.message);
-                }
-
-                const params = { Bucket: BUCKET };
-                const s3 = new S3(params);
+    };
     
-                Object.assign(params, { Key: file, Body: data});
-                s3.putObject(params, (err) => {
-                    if (err) {
-                        updateState(task_id, { state: 'failed' });
-                        console.error(err.message);
-                    }
+    writeFileAsync(file, data).then(() => {
+        tar.c(options.tar, [file]);
+    }).then(() => {
+        file = options.tar.file
+        return readFileAsync(file);
+    }).then((read) => {
+        const params = { Key: file, Body: read };
+        putObjectAsync(params);
+    }).then(() => {
+        requestAsync(options.patch);
+    }).then(() => {
+        updateState(task_id, { state: 'published' });
+    }).catch((err) => {
+        updateState(task_id, { state: 'failed' });
+        console.error(err.message);
+    });
+};
 
-                    request.patch({
-                        uri: `${COORDINATOR_API}/releases/${release_id}/tasks/${task_id}`,
-                        body: { progress: 100, state: 'published' },
-                        json: true
-                    }).then((res) => {
-                        if (res.statusCode !== 200) {
-                            updateState(taskId, { state: 'staged' });
-                        } else {
-                            updateState(taskId, { state: 'published' });
-                        }
-                    }).catch((err) => {
-                        console.error(err.message);
-                    });
-                });
-            });
-        })
+/** 
+ * @access private
+ * writeFileAsync() writes data on a local disk
+ * @param {string} file
+ * @param {Object} data
+ * @returns {Object}
+ */
+const writeFileAsync = (file, data) => {
+    return new Promise((resolve, reject) => {
+        fs.writeFile(file, data, (err) => {
+            if (err) { reject (err); } 
+        });
+    });
+};
+
+/** 
+ * @access private
+ * readFileAsync() reads in data from a local disk
+ * @param {string} file
+ * @returns {Object}
+ */
+const readFileAsync = (file) => {
+    return new Promise((resolve, reject) => {
+        fs.readFile(file, (err, data) => {
+            if (err) { reject (err); }
+            else { resolve(data) }
+        });
+    });
+};
+
+/** 
+ * @access private
+ * putObjectAsync() put data in an S3 bucket
+ * @param {Object} params
+ * @returns {Object}
+ */
+const putObjectAsync = (params) => {
+    return Promise((resolve, reject) => {
+        const s3 = new S3({ params: { Bucket: BUCKET } });
+        s3.putObject(params, (err, data) => {
+            if (err) { reject(err); }
+            else { resolve(data) }
+        });
     });
 };
 

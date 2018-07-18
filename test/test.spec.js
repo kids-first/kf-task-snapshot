@@ -15,13 +15,13 @@ const options = {
 
 describe('Sending a request', () => {
     describe('GET /status', () => {
-        options.url = '/status'
+        options.url = '/status';
         options.method = 'GET';
         
         it('should return statusCode equal to 200', () => {
             request(options, (err, res, data) => {
                 expect(res.statusCode).to.equal(200);
-            })
+            });
         });
     });
 });

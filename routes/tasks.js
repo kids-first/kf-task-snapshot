@@ -3,6 +3,7 @@
 const fs = require('fs');
 
 const express = require('express');
+const request = require('request');
 const tar = require('tar');
 const S3 = require('aws-sdk/clients/s3');
 
@@ -63,7 +64,6 @@ const snapshot = {};
 // Constants
 const DATA_SERVICE_API = process.env.DATA_SERVICE_API;
 const ENDPOINTS = {
-    study: '/studies',
     participant: '/participants',
     biospecimen: '/biospecimens',
     diagnosis: '/diagnoses',
@@ -88,7 +88,7 @@ const BUCKET = process.env.BUCKET;
  */
 const isSomeUndefined = (...args) => {
     return args.some((ele) => { return ele === undefined; });
-}
+};
 
 /** 
  * @access public
@@ -120,65 +120,50 @@ const start = (task_id, release_id, context) => {
     updateState(task_id, { state: 'running' });
     context.status(200).json(getTask(task_id));
 
-    Promise.resolve(() => {
-        let studyIds = [];
-        for (let endpoint in ENDPOINTS) {
-            let next = endpoint;
-            const options = {
-                uri: DATA_SERVICE_API + next,
-                qs: { limit: 100 },
-                json: true
-            };
+    const options = {
+        baseUrl: DATA_SERVICE_API,
+        method: 'GET',
+        headers: { 'content-type': 'application/json' },
+        qs: { limit: 100 }
+    };
+    const studyIds = [];
 
-            if (endpoint !== 'study') {
-                for (let studyId of studyIds) {
-                    options.study_id = studyId;
-                    while (next) {
-                        request.get(options).then((res) => {
-                            const { results, _links } = res;
-                            snapshot[studyId] = snapshot[studyId] || {};
-                            snapshot[studyId][endpoint] = (
-                                snapshot[studyId][endpoint] || []
-                            ).concat(results);
-                            next = res._links.next;
-                        }).catch((err) => {
-                            updateState(task_id, { state: 'failed'});
-                            console.error(err.message);
-                        });
-                    }
-                }
-            } else {
-                while (next) {
-                    request.get(options).then((res) => {
-                        const { results, _links } = res;
-                        for (let result of results) {
-                            studyIds.push(result.kf_id);
-                        }
-                        next = res._links.next;
-                    }).catch((err) => {
-                        updateState(task_id, { state: 'failed'});
-                        console.error(err.message);
-                    });
-                }
+    getStudyIds(options, '/studies', studyIds)
+        .then((studyIds) => {
+        })
+        .catch((err) => {
+            updateState(task_id, { state: 'failed'});
+            console.log(err.message);
+        });
+};
+
+/** 
+ * @access private
+ * getStudyIds() gets registered kf study ids
+ * @param {Object} options
+ * @param {Object} next
+ * @param {Object[]} array
+ * @returns {Object}
+ */
+const getStudyIds = (options, next, array) => {
+    options.uri = next;
+    return new Promise((resolve, reject) => {
+        request(options, (err, res, data) => {
+            if (err) { reject(err); }
+
+            const { _links, results } = JSON.parse(data);
+            for (let result of results) {
+                array.push(result.kf_id);
             }
-        }
-    }).then(() => {
-        request.patch({
-            uri: `${COORDINATOR_API}/releases/${release_id}/tasks/${task_id}`,
-            body: { progress: 100, state: 'staged' },
-            json: true
-        }).then((res) => {
-            updateState(task_id, { state: 'staged' });
-        }).catch((err) => {
-            updateState(task_id, { state: 'pending' });
-            console.error(err.message);
+
+            next = _links.next;
+            if (!next) { resolve(array); }
+            else {
+              resolve(getStudyIds(options, next, array));
+            }
         });
     });
 };
-
-// forEachAsync
-
-// whileAsync
 
 /** 
  * @access private
@@ -190,7 +175,7 @@ const requestAsync = (options) => {
     return new Promise((resolve, reject) => {
         request(options, (err, res, data) => {
             if (err) { reject(err); }
-            else { resolve(data) };
+            else { resolve(JSON.parse(data)); }
         });
     });
 };
@@ -215,29 +200,34 @@ const publish = (task_id, release_id, context) => {
             uri: `/releases/${release_id}/tasks/${task_id}`,
             baseUrl: COORDINATOR_API,
             method: 'PATCH',
-            headers: {
-                'content-type': 'application/json'
-            },
+            headers: { 'content-type': 'application/json' },
             json: { progress: 100, state: 'staged' }
         }
     };
     
-    writeFileAsync(file, data).then(() => {
-        tar.c(options.tar, [file]);
-    }).then(() => {
-        file = options.tar.file
-        return readFileAsync(file);
-    }).then((read) => {
-        const params = { Key: file, Body: read };
-        putObjectAsync(params);
-    }).then(() => {
-        requestAsync(options.patch);
-    }).then(() => {
-        updateState(task_id, { state: 'published' });
-    }).catch((err) => {
-        updateState(task_id, { state: 'failed' });
-        console.error(err.message);
-    });
+    writeFileAsync(file, data)
+        .then(() => {
+            tar.c(options.tar, [file]);
+        })
+        .then(() => {
+            file = options.tar.file;
+            return readFileAsync(file);
+        })
+        .then((read) => {
+            const params = { Key: file, Body: read };
+            return putObjectAsync(params);
+        })
+        .then((res) => {
+            console.log(`Successfully uploaded ${file}`);
+            requestAsync(options.patch);
+        })
+        .then(() => {
+            updateState(task_id, { state: 'published' });
+        })
+        .catch((err) => {
+            updateState(task_id, { state: 'failed' });
+            console.log(err.message);
+        });
 };
 
 /** 
@@ -265,7 +255,7 @@ const readFileAsync = (file) => {
     return new Promise((resolve, reject) => {
         fs.readFile(file, (err, data) => {
             if (err) { reject (err); }
-            else { resolve(data) }
+            else { resolve(data); }
         });
     });
 };
@@ -277,11 +267,11 @@ const readFileAsync = (file) => {
  * @returns {Object}
  */
 const putObjectAsync = (params) => {
-    return Promise((resolve, reject) => {
+    return new Promise((resolve, reject) => {
         const s3 = new S3({ params: { Bucket: BUCKET } });
         s3.putObject(params, (err, data) => {
             if (err) { reject(err); }
-            else { resolve(data) }
+            else { resolve(data); }
         });
     });
 };
@@ -298,7 +288,7 @@ const cancel = (task_id, release_id, context) => {
     updateState(task_id, { state: 'cancelled' });
     return context.status(200).json({
         message: `task ${task_id} is cancelled`
-    })
+    });
 };
 
 /** 

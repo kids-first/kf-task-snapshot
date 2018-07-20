@@ -65,12 +65,11 @@ const snapshot = {};
 const DATA_SERVICE_API = process.env.DATA_SERVICE_API;
 const ENDPOINTS = {
     participant: '/participants',
-    biospecimen: '/biospecimens',
     diagnosis: '/diagnoses',
     phenotype: '/phenotypes',
     outcome: '/outcomes',
-    sequencing_center: '/sequencing-centers',
-    genomic_file: '/genomic-files'
+    biospecimen: '/biospecimens',
+    sequencing_center: '/sequencing-centers'
 };
 const COORDINATOR_API = process.env.COORDINATOR_API;
 const TRANSITIONS = {
@@ -118,18 +117,38 @@ const initialize = (task_id, release_id) => {
  */
 const start = (task_id, release_id, context) => {
     updateState(task_id, { state: 'running' });
-    context.status(200).json(getTask(task_id));
 
     const options = {
-        baseUrl: DATA_SERVICE_API,
-        method: 'GET',
-        headers: { 'content-type': 'application/json' },
-        qs: { limit: 100 }
+        get: {
+            baseUrl: DATA_SERVICE_API,
+            method: 'GET',
+            headers: { 'content-type': 'application/json' },
+            qs: { limit: 100 }
+        },
+        patch: {
+            uri: `/releases/${release_id}/tasks/${task_id}`,
+            baseUrl: COORDINATOR_API,
+            method: 'PATCH',
+            headers: { 'content-type': 'application/json' },
+            body: { progress: 100, state: 'staged' },
+            json: true
+        }
+        
     };
-    const studyIds = [];
+    const studies = [];
 
-    getStudyIds(options, '/studies', studyIds)
-        .then((studyIds) => {
+    loopRequest(options.get, '/studies', studies)
+        .then((studies) => {
+            return Promise.all(studies.map((study) => {
+                return scrapeByStudy(options.get, study);
+            }));
+        })
+        .then((results) => {
+            console.log(`staged: ${results}`);
+            return requestAsync(options.patch);
+        })
+        .then(() => {
+            updateState(task_id, { state: 'staged' });
         })
         .catch((err) => {
             updateState(task_id, { state: 'failed'});
@@ -139,43 +158,74 @@ const start = (task_id, release_id, context) => {
 
 /** 
  * @access private
- * getStudyIds() gets registered kf study ids
+ * requestAsync() sends a promisified request
  * @param {Object} options
- * @param {Object} next
- * @param {Object[]} array
  * @returns {Object}
  */
-const getStudyIds = (options, next, array) => {
-    options.uri = next;
+const requestAsync = (options) => {
     return new Promise((resolve, reject) => {
-        request(options, (err, res, data) => {
-            if (err) { reject(err); }
-
-            const { _links, results } = JSON.parse(data);
-            for (let result of results) {
-                array.push(result.kf_id);
-            }
-
-            next = _links.next;
-            if (!next) { resolve(array); }
-            else {
-              resolve(getStudyIds(options, next, array));
-            }
+        request(options, (err, res, body) => {
+            if (err) reject(err);
+            else resolve(body);
         });
     });
 };
 
 /** 
  * @access private
- * writeFileAsync() writes data on a local disk
+ * loopRquest() paginates and saves the results
  * @param {Object} options
+ * @param {string} next
+ * @param {Object[]} array
  * @returns {Object}
  */
-const requestAsync = (options) => {
+const loopRequest = (options, next, array) => {
+    options.uri = next;
     return new Promise((resolve, reject) => {
-        request(options, (err, res, data) => {
-            if (err) { reject(err); }
-            else { resolve(JSON.parse(data)); }
+        requestAsync(options)
+            .then((body) => {
+                const data = JSON.parse(body);
+                const { _links, results } = data;
+                array = array.concat(results);
+                next = _links.next;
+                if (next === undefined) resolve(array);
+                else resolve(loopRequest(options, next, array));
+            })
+            .catch((err) => reject(err));
+    });
+};
+
+/** 
+ * @access private
+ * scrapeByStudy() collects data by study
+ * @param {Object} options
+ * @param {Object} study
+ * @returns {string}
+ */
+const scrapeByStudy = (options, study) => {
+    return new Promise((resolve, reject) => {
+        const studyId = study.kf_id;
+        console.log(`start: scraping ${studyId}`);
+
+        snapshot[studyId] = { study };
+        options.qs.study_id = studyId;
+        const entries = Object.entries(ENDPOINTS);
+        let count = entries.length;
+        entries.forEach((entry) => {
+            const [endpoint, next] = entry;
+            const data = [];
+            options.uri = next;
+            loopRequest(options, next, data)
+                .then((data) => {
+                    snapshot[studyId][endpoint] = data;
+                    console.log(
+                        `GET ${endpoint} of ${studyId}`
+                    );
+                    if (--count <= 0) resolve(studyId);
+                })
+                .catch((err) => {
+                    reject(err);
+                });
         });
     });
 };
@@ -190,7 +240,6 @@ const requestAsync = (options) => {
  */
 const publish = (task_id, release_id, context) => {
     updateState(task_id, { state: 'publishing' });
-    context.status(200).json(getTask(task_id));
 
     let file = `${release_id}.json`; 
     const data = JSON.stringify(snapshot);
@@ -201,25 +250,26 @@ const publish = (task_id, release_id, context) => {
             baseUrl: COORDINATOR_API,
             method: 'PATCH',
             headers: { 'content-type': 'application/json' },
-            json: { progress: 100, state: 'staged' }
+            body: { progress: 100, state: 'published' },
+            json: true
         }
     };
     
     writeFileAsync(file, data)
         .then(() => {
-            tar.c(options.tar, [file]);
+            return tar.c(options.tar, [file]);
         })
         .then(() => {
             file = options.tar.file;
             return readFileAsync(file);
         })
-        .then((read) => {
-            const params = { Key: file, Body: read };
+        .then((data) => {
+            const params = { Key: file, Body: data };
             return putObjectAsync(params);
         })
         .then((res) => {
             console.log(`Successfully uploaded ${file}`);
-            requestAsync(options.patch);
+            return requestAsync(options.patch);
         })
         .then(() => {
             updateState(task_id, { state: 'published' });
@@ -240,7 +290,8 @@ const publish = (task_id, release_id, context) => {
 const writeFileAsync = (file, data) => {
     return new Promise((resolve, reject) => {
         fs.writeFile(file, data, (err) => {
-            if (err) { reject (err); } 
+            if (err) reject (err);
+            else resolve();
         });
     });
 };
@@ -254,8 +305,8 @@ const writeFileAsync = (file, data) => {
 const readFileAsync = (file) => {
     return new Promise((resolve, reject) => {
         fs.readFile(file, (err, data) => {
-            if (err) { reject (err); }
-            else { resolve(data); }
+            if (err) reject (err);
+            else resolve(data);
         });
     });
 };
@@ -270,8 +321,8 @@ const putObjectAsync = (params) => {
     return new Promise((resolve, reject) => {
         const s3 = new S3({ params: { Bucket: BUCKET } });
         s3.putObject(params, (err, data) => {
-            if (err) { reject(err); }
-            else { resolve(data); }
+            if (err) reject(err);
+            else resolve(data);
         });
     });
 };

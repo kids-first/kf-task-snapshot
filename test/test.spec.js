@@ -4,6 +4,13 @@ const expect = require('chai').expect;
 const request = require('request');
 
 
+const app = require('../app');
+let server;
+
+before(done => {
+    server = app.listen(3030, done);
+});
+
 const host = process.env.HOST || 'localhost';
 const port = process.env.PORT || 3030;
 const options = { 
@@ -15,7 +22,7 @@ const options = {
 
 describe('Sending a request', () => {
     describe('GET /status', () => {
-        options.url = '/status';
+        options.uri = '/status';
         options.method = 'GET';
         
         it('should return statusCode equal to 200', () => {
@@ -36,4 +43,8 @@ describe('Sending a request', () => {
             });
         });
     });
+});
+
+after(done => {
+    server.close(done);
 });

@@ -81,16 +81,6 @@ const BUCKET = process.env.BUCKET;
 
 /** 
  * @access public
- * isSomeUndefined() checks if at least one element is undefined
- * @param {premitive(s)} ...args
- * @returns {boolean} 
- */
-const isSomeUndefined = (...args) => {
-    return args.some((ele) => { return ele === undefined; });
-};
-
-/** 
- * @access public
  * initialize() creates a new task of snapshot
  * @param {string} task_id 
  * @param {string} release_id 
@@ -126,14 +116,13 @@ const start = (task_id, release_id, context) => {
             qs: { limit: 100 }
         },
         patch: {
-            uri: `/releases/${release_id}/tasks/${task_id}`,
+            uri: `/tasks/${task_id}`,
             baseUrl: COORDINATOR_API,
             method: 'PATCH',
             headers: { 'content-type': 'application/json' },
             body: { progress: 100, state: 'staged' },
             json: true
         }
-        
     };
     const studies = [];
 
@@ -221,6 +210,7 @@ const scrapeByStudy = (options, study) => {
                     console.log(
                         `GET ${endpoint} of ${studyId}`
                     );
+                    console.log(snapshot[studyId][endpoint]);
                     if (--count <= 0) resolve(studyId);
                 })
                 .catch((err) => {

@@ -23,5 +23,17 @@ describe('Sending a request', () => {
                 expect(res.statusCode).to.equal(200);
             });
         });
+
+        const data = JSON.stringify({
+            'message': { 
+                'name': 'snapshot task', 
+                'version': '1.0.0' 
+            }
+        });
+        it(`should return body equal to ${data}`, () => {
+            request(options, (err, res, body) => {
+                expect(body).to.equal(data);
+            });
+        });
     });
 });

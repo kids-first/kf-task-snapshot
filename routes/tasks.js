@@ -14,12 +14,14 @@ require('dotenv').config();
 router.post('/', (req, res) => {
     const { action, task_id, release_id } = req.body;
 
+    // if any of the params misses, return 400
     if (!action || !task_id || !release_id) {
         return res.status(400).json({ 
             message: 'missing a required field'
         });
     }
 
+    // if an action is not prediefined, return 400
     if (ACTIONS[action] === undefined) {
         const actions = Object.keys(ACTIONS).join(', ');
         return res.status(400).json({ 
@@ -27,6 +29,7 @@ router.post('/', (req, res) => {
         });
     }
 
+    // if a task is not initialized, return 400
     let task = getTask(task_id);
     if (task === undefined && action !== 'initialize') {
         return res.status(400).json({ 
@@ -34,35 +37,40 @@ router.post('/', (req, res) => {
         });
     }
 
-    const state = task !== undefined ? task.state : undefined;
+    // if an action is not allowed, return 400
+    const state = task !== undefined ? task.state : task;
     let isAllowed = TRANSITIONS[state] === action;
-    isAllowed = isAllowed || action === 'get_status';
+    isAllowed = (isAllowed || 
+        ['get_status', 'cancel'].indexOf(action) > -1);
     if (isAllowed === false) {
         return res.status(400).json({ 
             message: `${action} not allowed in ${state}`
         });
     }
 
-    if (action !== 'get_status' && action !== 'initialize') {
-        ACTIONS[action](task_id, release_id, res);
-    }
-    
+    // initialize a task
     if (task === undefined && action === 'initialize') {
         initialize(task_id, release_id);
         return res.status(200).json(getTask(task_id));  
     }
 
+    // trigger start(), publish(), and cancel()
+    if (['initialize', 'get_status'].indexOf(action) < 0) {
+        ACTIONS[action](task_id, release_id);
+    }
+
+    // return the status of task
     return res.status(200).json(get_status(task_id));
 });
 
-// Task cache
+// define a task cache
 const tasks = {};
 
-// Snapshot cache
+// define a snapshot cache
 const snapshot = {};
 
-// Constants
-const DATA_SERVICE_API = process.env.DATA_SERVICE_API;
+// define constants
+const DATASERVICE_API = process.env.DATASERVICE_API;
 const ENDPOINTS = {
     participant: '/participants',
     diagnosis: '/diagnoses',
@@ -99,25 +107,23 @@ const initialize = (task_id, release_id) => {
 
 /** 
  * @access public
- * start() starts the creation of snapshot
+ * start() triggers the creation of snapshot
  * @param {string} task_id
  * @param {string} release_id
- * @param {Object} context
  * @returns {Object}
  */
-const start = (task_id, release_id, context) => {
+const start = (task_id, release_id) => {
     updateState(task_id, { state: 'running' });
 
     const options = {
         get: {
-            baseUrl: DATA_SERVICE_API,
+            baseUrl: DATASERVICE_API,
             method: 'GET',
             headers: { 'content-type': 'application/json' },
             qs: { limit: 100 }
         },
         patch: {
-            uri: `/tasks/${task_id}`,
-            baseUrl: COORDINATOR_API,
+            uri: `${COORDINATOR_API}/tasks/${task_id}`,
             method: 'PATCH',
             headers: { 'content-type': 'application/json' },
             body: { progress: 100, state: 'staged' },
@@ -178,9 +184,11 @@ const loopRequest = (options, next, array) => {
                 array = array.concat(results);
                 next = _links.next;
                 if (next === undefined) resolve(array);
-                else resolve(loopRequest(options, next, array));
+                else resolve(
+                    loopRequest(options, next, array)
+                );
             })
-            .catch((err) => reject(err));
+            .catch((err) => { reject(err) });
     });
 };
 
@@ -203,19 +211,15 @@ const scrapeByStudy = (options, study) => {
         entries.forEach((entry) => {
             const [endpoint, next] = entry;
             const data = [];
-            options.uri = next;
             loopRequest(options, next, data)
                 .then((data) => {
-                    snapshot[studyId][endpoint] = data;
                     console.log(
                         `GET ${endpoint} of ${studyId}`
                     );
-                    console.log(snapshot[studyId][endpoint]);
+                    snapshot[studyId][endpoint] = data;
                     if (--count <= 0) resolve(studyId);
                 })
-                .catch((err) => {
-                    reject(err);
-                });
+                .catch((err) => { reject(err); });
         });
     });
 };
@@ -225,10 +229,9 @@ const scrapeByStudy = (options, study) => {
  * publish() publishes a staged snapshot task
  * @param {string} task_id 
  * @param {string} release_id
- * @param {Object} context
  * @returns {Object}
  */
-const publish = (task_id, release_id, context) => {
+const publish = (task_id, release_id) => {
     updateState(task_id, { state: 'publishing' });
 
     let file = `${release_id}.json`; 
@@ -236,8 +239,7 @@ const publish = (task_id, release_id, context) => {
     const options = {
         tar: { file: `${release_id}.tar.gz` },
         patch: {
-            uri: `/releases/${release_id}/tasks/${task_id}`,
-            baseUrl: COORDINATOR_API,
+            uri: `${COORDINATOR_API}/tasks/${task_id}`,
             method: 'PATCH',
             headers: { 'content-type': 'application/json' },
             body: { progress: 100, state: 'published' },
@@ -322,14 +324,10 @@ const putObjectAsync = (params) => {
  * cancel() terminates a snapshot task
  * @param {string} task_id 
  * @param {string} release_id 
- * @param {Object} context
  * @returns {Object}
  */
-const cancel = (task_id, release_id, context) => {
+const cancel = (task_id, release_id) => {
     updateState(task_id, { state: 'cancelled' });
-    return context.status(200).json({
-        message: `task ${task_id} is cancelled`
-    });
 };
 
 /** 
@@ -357,16 +355,11 @@ const getTask = (task_id) => { return tasks[task_id]; };
 const updateState = (task_id, body) => {
     let task = getTask(task_id);
     task = task === undefined ? {} : task;
-    
-    //Object.assign(task, body)
-    for (let key in body) { 
-        task[key] = body[key]; 
-    }
-
+    Object.assign(task, body);
     tasks[task_id] = task;
 };
 
-// Routing logic
+// routing logic
 const ACTIONS = {
     initialize,
     start,

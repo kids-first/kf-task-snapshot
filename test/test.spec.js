@@ -3,16 +3,17 @@
 const expect = require('chai').expect;
 const request = require('request');
 
-
 const app = require('../app');
-let server;
 
-before(done => {
-    server = app.listen(3030, done);
-});
 
 const host = process.env.HOST || 'localhost';
 const port = process.env.PORT || 3030;
+let server;
+
+before((done) => {
+    server = app.listen(port, done);
+});
+
 const options = { 
     baseUrl: `http://${host}:${port}`,
     headers: {
@@ -45,6 +46,6 @@ describe('Sending a request', () => {
     });
 });
 
-after(done => {
+after((done) => {
     server.close(done);
 });

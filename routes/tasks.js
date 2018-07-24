@@ -4,9 +4,7 @@ const fs = require('fs');
 
 const express = require('express');
 const request = require('request');
-const tar = require('tar');
 const S3 = require('aws-sdk/clients/s3');
-
 
 const router = express.Router();
 require('dotenv').config();
@@ -77,7 +75,9 @@ const ENDPOINTS = {
     phenotype: '/phenotypes',
     outcome: '/outcomes',
     biospecimen: '/biospecimens',
-    sequencing_center: '/sequencing-centers'
+    sequencing_center: '/sequencing-centers',
+    sequencing_experiment: 'sequencing-experiments',
+    genomic_file: '/genomic-files'
 };
 const COORDINATOR_API = process.env.COORDINATOR_API;
 const TRANSITIONS = {
@@ -161,7 +161,7 @@ const requestAsync = (options) => {
     return new Promise((resolve, reject) => {
         request(options, (err, res, body) => {
             if (err) reject(err);
-            else resolve(body);
+            else resolve({ res, body });
         });
     });
 };
@@ -178,7 +178,7 @@ const loopRequest = (options, next, array) => {
     options.uri = next;
     return new Promise((resolve, reject) => {
         requestAsync(options)
-            .then((body) => {
+            .then(({ res, body }) => {
                 const data = JSON.parse(body);
                 const { _links, results } = data;
                 array = array.concat(results);
@@ -234,32 +234,27 @@ const scrapeByStudy = (options, study) => {
 const publish = (task_id, release_id) => {
     updateState(task_id, { state: 'publishing' });
 
-    let file = `${release_id}.json`; 
-    const data = JSON.stringify(snapshot);
+    const file = `${release_id}.json`; 
     const options = {
-        tar: { file: `${release_id}.tar.gz` },
         patch: {
             uri: `${COORDINATOR_API}/tasks/${task_id}`,
             method: 'PATCH',
-            headers: { 'content-type': 'application/json' },
+            headers: { 'Content-Type': 'application/json' },
             body: { progress: 100, state: 'published' },
             json: true
-        }
+        },
+        rs: { encoding: 'utf-8' }
     };
-    
-    writeFileAsync(file, data)
+
+    writeFileAsync(file, JSON.stringify(snapshot))
         .then(() => {
-            return tar.c(options.tar, [file]);
+            return putObjectAsync({
+                Bucket: BUCKET, 
+                Key: file,
+                Body: fs.createReadStream(file, options.rs)
+            });
         })
         .then(() => {
-            file = options.tar.file;
-            return readFileAsync(file);
-        })
-        .then((data) => {
-            const params = { Key: file, Body: data };
-            return putObjectAsync(params);
-        })
-        .then((res) => {
             console.log(`Successfully uploaded ${file}`);
             return requestAsync(options.patch);
         })
@@ -267,7 +262,7 @@ const publish = (task_id, release_id) => {
             updateState(task_id, { state: 'published' });
         })
         .catch((err) => {
-            updateState(task_id, { state: 'failed' });
+            updateState(task_id, { state: 'failed'});
             console.log(err.message);
         });
 };
@@ -281,24 +276,10 @@ const publish = (task_id, release_id) => {
  */
 const writeFileAsync = (file, data) => {
     return new Promise((resolve, reject) => {
+        console.log(`writing data to ${file}`);
         fs.writeFile(file, data, (err) => {
             if (err) reject (err);
             else resolve();
-        });
-    });
-};
-
-/** 
- * @access private
- * readFileAsync() reads in data from a local disk
- * @param {string} file
- * @returns {Object}
- */
-const readFileAsync = (file) => {
-    return new Promise((resolve, reject) => {
-        fs.readFile(file, (err, data) => {
-            if (err) reject (err);
-            else resolve(data);
         });
     });
 };
@@ -311,10 +292,13 @@ const readFileAsync = (file) => {
  */
 const putObjectAsync = (params) => {
     return new Promise((resolve, reject) => {
-        const s3 = new S3({ params: { Bucket: BUCKET } });
-        s3.putObject(params, (err, data) => {
+        console.log(
+            `putting ${params.Key} into ${params.Bucket}`
+        );
+        const s3 = new S3();
+        s3.putObject(params, (err, body) => {
             if (err) reject(err);
-            else resolve(data);
+            else resolve(body);
         });
     });
 };

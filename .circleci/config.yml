@@ -31,12 +31,7 @@ jobs:
       - save_cache:
           paths:
             - node_modules
-<<<<<<< HEAD
-          key:
-            - v1-dependencies-{{ checksum "package.json" }}
-=======
           key: v1-dependencies-{{ checksum "package.json" }}
->>>>>>> 565a75b... :construction: resolve codacy issues
 
       # run tests!
       - run:

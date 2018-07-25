@@ -1,24 +1,51 @@
 'use strict';
 
-const chai = require('chai');
-const http = require('http');
+const expect = require('chai').expect;
+const request = require('request');
+
+const app = require('../app');
 
 
-const expect = chai.expect;
-const options = {
-    host: process.env.HOST || 'localhost',
-    port: process.env.PORT || 3000
-};
+const host = process.env.HOST || 'localhost';
+const port = process.env.PORT || 3030;
+let server;
+
+before((done) => {
+    server = app.listen(port, done);
+});
+
+const options = { 
+    baseUrl: `http://${host}:${port}`,
+    headers: {
+        'content-type': 'application/json'
+    }
+};       
 
 describe('Sending a request', () => {
     describe('GET /status', () => {
+        options.uri = '/status';
         options.method = 'GET';
-        options.path = '/status';
         
         it('should return statusCode equal to 200', () => {
-            http.request(options, (res) => {
+            request(options, (err, res, data) => {
                 expect(res.statusCode).to.equal(200);
             });
         });
+
+        const data = JSON.stringify({
+            'message': { 
+                'name': 'snapshot task', 
+                'version': '1.0.0' 
+            }
+        });
+        it(`should return body equal to ${data}`, () => {
+            request(options, (err, res, body) => {
+                expect(body).to.equal(data);
+            });
+        });
     });
+});
+
+after((done) => {
+    server.close(done);
 });

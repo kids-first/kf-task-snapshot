@@ -70,6 +70,7 @@ const snapshot = {};
 // define constants
 const DATASERVICE_API = process.env.DATASERVICE_API;
 const ENDPOINTS = {
+    study: '/studies',
     participant: '/participants',
     diagnosis: '/diagnoses',
     phenotype: '/phenotypes',
@@ -116,30 +117,39 @@ const start = (task_id, release_id) => {
     updateState(task_id, { state: 'running' });
 
     const options = {
-        get: {
+        release: {
+            uri: `/releases/${release_id}`,
+            baseUrl: COORDINATOR_API,
+            method: 'GET',
+            headers: { 'Content-Type': 'application/json' },
+        },
+        data: {
             baseUrl: DATASERVICE_API,
             method: 'GET',
-            headers: { 'content-type': 'application/json' },
+            headers: { 'Content-Type': 'application/json' },
             qs: { limit: 100 }
         },
         patch: {
-            uri: `${COORDINATOR_API}/tasks/${task_id}`,
+            uri: `/tasks/${task_id}`,
+            baseUrl: COORDINATOR_API,
             method: 'PATCH',
-            headers: { 'content-type': 'application/json' },
+            headers: { 'Content-Type': 'application/json' },
             body: { progress: 100, state: 'staged' },
             json: true
         }
     };
-    const studies = [];
 
-    loopRequest(options.get, '/studies', studies)
+    requestAsync(options.release)
+        .then(({ res, body }) => {
+            return JSON.parse(body).studies;
+        })
         .then((studies) => {
             return Promise.all(studies.map((study) => {
-                return scrapeByStudy(options.get, study);
+                return scrapeByStudy(options.data, study);
             }));
         })
         .then((results) => {
-            console.log(`staged: ${results}`);
+            console.log(`STAGED: ${results}`);
             return requestAsync(options.patch);
         })
         .then(() => {
@@ -201,23 +211,27 @@ const loopRequest = (options, next, array) => {
  */
 const scrapeByStudy = (options, study) => {
     return new Promise((resolve, reject) => {
-        const studyId = study.kf_id;
-        console.log(`start: scraping ${studyId}`);
+        console.log(`START: scraping ${study}`);
 
-        snapshot[studyId] = { study };
-        options.qs.study_id = studyId;
+        snapshot[study] = {};
         const entries = Object.entries(ENDPOINTS);
         let count = entries.length;
         entries.forEach((entry) => {
-            const [endpoint, next] = entry;
+            let [endpoint, next] = entry;
             const data = [];
+            if (endpoint === 'study') {
+                next += `/${study}`;
+            } else {
+                options.qs.study_id = study;
+            }
+            
             loopRequest(options, next, data)
                 .then((data) => {
+                    snapshot[study][endpoint] = data;
                     console.log(
-                        `GET ${endpoint} of ${studyId}`
+                        `DONE: ${endpoint} of ${study}`
                     );
-                    snapshot[studyId][endpoint] = data;
-                    if (--count <= 0) resolve(studyId);
+                    if (--count <= 0) resolve(study);
                 })
                 .catch((err) => { reject(err); });
         });
@@ -237,7 +251,8 @@ const publish = (task_id, release_id) => {
     const file = `${release_id}.json`; 
     const options = {
         patch: {
-            uri: `${COORDINATOR_API}/tasks/${task_id}`,
+            uri: `/tasks/${task_id}`,
+            baseUrl: COORDINATOR_API,
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: { progress: 100, state: 'published' },

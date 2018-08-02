@@ -266,7 +266,8 @@ const publish = (task_id, release_id) => {
             return putObjectAsync({
                 Bucket: BUCKET, 
                 Key: file,
-                Body: fs.createReadStream(file, options.rs)
+                Body: fs.createReadStream(file, options.rs),
+                ContentType: 'application/json'
             });
         })
         .then(() => {

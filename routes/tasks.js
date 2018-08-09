@@ -4,12 +4,17 @@ const fs = require('fs');
 
 const express = require('express');
 const request = require('request');
-const S3 = require('aws-sdk/clients/s3');
+const AWS = require('aws-sdk');
+
+
+AWS.config.update({ region:'us-east-1' });
+const docClient = new AWS.DynamoDB.DocumentClient();
+const s3 = new AWS.S3();
 
 const router = express.Router();
 require('dotenv').config();
 
-router.post('/', (req, res) => {
+router.post('/', async (req, res) => {
     const { action, task_id, release_id } = req.body;
 
     // if any of the params misses, return 400
@@ -28,7 +33,7 @@ router.post('/', (req, res) => {
     }
 
     // if a task is not initialized, return 400
-    let task = getTask(task_id);
+    const task = await getTask(task_id);
     if (task === undefined && action !== 'initialize') {
         return res.status(400).json({ 
             message: `${task_id} not found. Initialize it`
@@ -48,21 +53,35 @@ router.post('/', (req, res) => {
 
     // initialize a task
     if (task === undefined && action === 'initialize') {
-        initialize(task_id, release_id);
-        return res.status(200).json(getTask(task_id));  
+        await initialize(task_id, release_id);
+        return res.status(200).json(await getTask(task_id));
     }
 
-    // trigger start(), publish(), and cancel()
+    // trigger start(), publish(), or cancel()
     if (['initialize', 'get_status'].indexOf(action) < 0) {
+        const data = {};
+        switch (action) {
+            case 'start': {
+                data.state = 'running';
+                break;
+            }
+            case 'publish': {
+                data.state = 'publishing';
+                break;
+            }
+            case 'cancel': {
+                data.state = 'cancelling';
+                break;
+            }
+        }
+
+        await updateState(task_id, data);
         ACTIONS[action](task_id, release_id);
     }
 
     // return the status of task
-    return res.status(200).json(get_status(task_id));
+    return res.status(200).json(await get_status(task_id));
 });
-
-// define a task cache
-const tasks = {};
 
 // define a snapshot cache
 const snapshot = {};
@@ -86,7 +105,8 @@ const TRANSITIONS = {
     pending: 'start',
     staged: 'publish'
 };
-const BUCKET = process.env.BUCKET;
+const TableName = process.env.TABLE_NAME;
+const SNAPSHOT_BUCKET = process.env.SNAPSHOT_BUCKET;
 
 /** 
  * @access public
@@ -94,16 +114,35 @@ const BUCKET = process.env.BUCKET;
  * @param {string} task_id 
  * @param {string} release_id 
  */
-const initialize = (task_id, release_id) => {
+const initialize = async (task_id, release_id) => {
     const data = {
-        name: 'snapshot task',
-        date_submitted: new Date(),
-        progress: null,
         task_id,
         release_id,
+        name: 'snapshot task',
+        date_submitted: getISOString(new Date()),
+        progress: null,
         state: 'pending'
     };
-    updateState(task_id, data);
+    return await updateState(task_id, data);
+};
+
+/** 
+ * @access private
+ * getISOString() converts a Date object to an ISO string
+ * @param {Object} date
+ * @returns {string}
+ */
+const getISOString = (date) => {
+	const checkDigit = (num) => {
+        return (num < 10 ? '0' : '') + num;
+    }
+
+    return `${date.getUTCFullYear()}-` +
+        `${checkDigit(date.getUTCMonth() + 1)}-` +
+        `${checkDigit(date.getUTCDate())}T` + 
+        `${checkDigit(date.getUTCHours())}:` + 
+        `${checkDigit(date.getUTCMinutes())}:` + 
+        `${checkDigit(date.getUTCSeconds())}Z`
 };
 
 /** 
@@ -114,8 +153,6 @@ const initialize = (task_id, release_id) => {
  * @returns {Object}
  */
 const start = (task_id, release_id) => {
-    updateState(task_id, { state: 'running' });
-
     const options = {
         release: {
             uri: `/releases/${release_id}`,
@@ -238,6 +275,7 @@ const scrapeByStudy = (options, study) => {
     });
 };
 
+// TODO: change the organization of snapshot structure
 /** 
  * @access public
  * publish() publishes a staged snapshot task
@@ -246,8 +284,6 @@ const scrapeByStudy = (options, study) => {
  * @returns {Object}
  */
 const publish = (task_id, release_id) => {
-    updateState(task_id, { state: 'publishing' });
-
     const file = `${release_id}.json`; 
     const options = {
         patch: {
@@ -264,7 +300,7 @@ const publish = (task_id, release_id) => {
     writeFileAsync(file, JSON.stringify(snapshot))
         .then(() => {
             return putObjectAsync({
-                Bucket: BUCKET, 
+                Bucket: SNAPSHOT_BUCKET, 
                 Key: file,
                 Body: fs.createReadStream(file, options.rs),
                 ContentType: 'application/json'
@@ -283,6 +319,7 @@ const publish = (task_id, release_id) => {
         });
 };
 
+// TODO: remove writeFileAsync()
 /** 
  * @access private
  * writeFileAsync() writes data on a local disk
@@ -311,7 +348,6 @@ const putObjectAsync = (params) => {
         console.log(
             `putting ${params.Key} into ${params.Bucket}`
         );
-        const s3 = new S3();
         s3.putObject(params, (err, body) => {
             if (err) reject(err);
             else resolve(body);
@@ -326,8 +362,8 @@ const putObjectAsync = (params) => {
  * @param {string} release_id 
  * @returns {Object}
  */
-const cancel = (task_id, release_id) => {
-    updateState(task_id, { state: 'cancelled' });
+const cancel = async (task_id, release_id) => {
+    await updateState(task_id, { state: 'cancelled' });
 };
 
 /** 
@@ -344,28 +380,57 @@ const get_status = (task_id) => { return getTask(task_id); };
  * @param {string} task_id 
  * @returns {Object}
  */
-const getTask = (task_id) => { return tasks[task_id]; };
+const getTask = (task_id) => {
+    const params = { TableName, Key: { task_id } };
+
+    return new Promise((resolve, reject) => {
+        docClient.get(params, (err, body) => {
+            if (err) reject(err);
+            else resolve(body.Item);
+        });
+    });
+};
 
 /** 
  * @access private
  * updateState() updates a state of snapshot task
  * @param {string} task_id 
- * @param {Object} body
+ * @param {Object} data
  */
-const updateState = (task_id, body) => {
-    let task = getTask(task_id);
-    task = task === undefined ? {} : task;
-    Object.assign(task, body);
-    tasks[task_id] = task;
+const updateState = async (task_id, data) => {
+    const task = await getTask(task_id);
+    const params = { TableName };
+
+    if (!task) {
+        return new Promise((resolve, reject) => {
+            params.Item = data;
+            docClient.put(params, (err, body) => {
+                if (err) reject(err);
+                else resolve(body);
+            }); 
+        });
+    } 
+    else { 
+        return new Promise((resolve, reject) => {
+            params.Key = { task_id };
+            params.UpdateExpression = 'set #state = :s';
+            params.ExpressionAttributeNames = { 
+                '#state': 'state' 
+            }
+            params.ExpressionAttributeValues = { 
+                ':s': data.state 
+            };
+            docClient.update(params, (err, body) => {
+                if (err) reject(err);
+                else resolve(body);
+            }); 
+        });
+    }
 };
 
 // routing logic
 const ACTIONS = {
-    initialize,
-    start,
-    publish,
-    get_status,
-    cancel
+    initialize, start, publish, get_status, cancel
 };
 
 module.exports = router;

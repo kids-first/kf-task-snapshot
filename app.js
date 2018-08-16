@@ -1,5 +1,3 @@
-'use strict';
-
 const express = require('express');
 const cors = require('cors');
 const morgan = require('morgan');
@@ -7,7 +5,7 @@ const bodyParser = require('body-parser');
 
 const logErrors = require('./middlewares/errorHandler');
 const indexRouter = require('./routes/index');
-const tasksRouter = require('./routes/tasks')
+const tasksRouter = require('./routes/tasks');
 
 
 const app = express();

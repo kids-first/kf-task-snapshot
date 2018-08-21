@@ -14,7 +14,14 @@
         "ignorePropertyModificationsFor": ["options"] 
       }
     ],
+    "no-underscore-dangle": [
+      "error", 
+      { 
+        "allow": ["_links"] 
+      }
+    ],
     "no-unused-vars": "off",
     "no-use-before-define": "off"
+    
   }
 }

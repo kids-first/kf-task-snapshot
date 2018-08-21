@@ -166,7 +166,7 @@ const start = (task_id, release_id) => {
       baseUrl: DATASERVICE_API,
       method: 'GET',
       headers: { 'Content-Type': 'application/json' },
-      qs: { limit: 100 },
+      qs: { limit: 100, visible: true },
     },
     patch: {
       uri: `/tasks/${task_id}`,
@@ -223,20 +223,17 @@ const requestAsync = (options) => {
  * @param {Object[]} array
  * @returns {Object}
  */
-const loopRequest = (options, next, array) => {
-  options.uri = next;
+const loopRequest = (options, link, array) => {
+  options.uri = link;
   return new Promise((resolve, reject) => {
     requestAsync(options)
       .then(({ res, body }) => {
         const data = JSON.parse(body);
-        const { _links } = data;
         let { results } = data;
-        const page = _links.next;
         results = array.concat(results);
-        if (page === undefined) resolve(results);
-        else {
-          resolve(loopRequest(options, page, results));
-        }
+        const { next } = data._links;
+        if (next === undefined) resolve(results);
+        else resolve(loopRequest(options, next, results));
       })
       .catch((err) => { reject(err); });
   });
@@ -259,7 +256,6 @@ const scrapeByStudy = (options, study) => {
     entries.forEach((entry) => {
       const entity = entry[0];
       let endpoint = entry[1];
-      // const data = [];
       if (entity === 'study') endpoint += `/${study}`;
       else options.qs.study_id = study;
 

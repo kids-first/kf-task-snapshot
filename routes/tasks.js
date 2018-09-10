@@ -291,20 +291,14 @@ const publish = (task_id, release_id) => {
       body: { progress: 100, state: 'published' },
       json: true,
     },
-    rs: { encoding: 'utf-8' },
   };
 
-  writeFileAsync(file, JSON.stringify(snapshot))
-    .then(() => {
-      return putObjectAsync({
-        Bucket: SNAPSHOT_BUCKET,
-        Key: file,
-        Body: fs.createReadStream(file, options.rs),
-        ContentType: 'application/json',
-      });
-    })
-    .then(() => {
-      console.log(`Successfully uploaded ${file}`);
+  const studies = Object.keys(snapshot);
+  Promise.all(studies.map((study) => {
+    return createSnapshot(release_id, study);
+  }))
+    .then((results) => {
+      console.log(`Successfully created ${results}`);
       return requestAsync(options.patch);
     })
     .then(() => {
@@ -316,20 +310,33 @@ const publish = (task_id, release_id) => {
     });
 };
 
-// TODO: remove writeFileAsync()
 /**
  * @access private
- * writeFileAsync() writes data on a local disk
- * @param {string} file
- * @param {Object} data
+ * createSnapshot() creates a snapshot by release_id and study
+ * @param {string} release_id
+ * @param {string} study
  * @returns {Object}
  */
-const writeFileAsync = (file, data) => {
+const createSnapshot = (release_id, study) => {
   return new Promise((resolve, reject) => {
-    console.log(`writing data to ${file}`);
-    fs.writeFile(file, data, (err) => {
-      if (err) reject(err);
-      else resolve();
+    console.log(`START: creating ${study}`);
+
+    const entries = Object.entries(snapshot[study]);
+    let count = entries.length;
+    entries.forEach((entry) => {
+      const [entity, data] = entry;
+      putObjectAsync({
+        Bucket: SNAPSHOT_BUCKET,
+        Key: `${release_id}/${study}/dataservice/${entity}.json`,
+        Body: JSON.stringify(data),
+        ContentType: 'application/json',
+      })
+        .then((body) => {
+          console.log(`DONE: ${body}`);
+          count -= 1;
+          if (count <= 0) resolve(study);
+        })
+        .catch((err) => { reject(err); });
     });
   });
 };

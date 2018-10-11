@@ -17,11 +17,10 @@
     "no-underscore-dangle": [
       "error", 
       { 
-        "allow": ["_links"] 
+        "allow": ["_status", "_links"] 
       }
     ],
     "no-unused-vars": "off",
     "no-use-before-define": "off"
-    
   }
 }

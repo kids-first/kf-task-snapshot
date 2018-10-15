@@ -4,6 +4,8 @@ const express = require('express');
 const request = require('request');
 const AWS = require('aws-sdk');
 
+const ENDPOINTS = require('../config/endpoint');
+
 
 AWS.config.update({ region: 'us-east-1' });
 const docClient = new AWS.DynamoDB.DocumentClient();
@@ -92,17 +94,6 @@ const {
   TABLE_NAME,
   SNAPSHOT_BUCKET,
 } = process.env;
-const ENDPOINTS = {
-  study: '/studies',
-  participant: '/participants',
-  diagnosis: '/diagnoses',
-  phenotype: '/phenotypes',
-  outcome: '/outcomes',
-  biospecimen: '/biospecimens',
-  sequencing_center: '/sequencing-centers',
-  sequencing_experiment: 'sequencing-experiments',
-  genomic_file: '/genomic-files',
-};
 const TRANSITIONS = {
   undefined: 'initialize',
   pending: 'start',
@@ -229,6 +220,9 @@ const loopRequest = (options, link, array) => {
     requestAsync(options)
       .then(({ res, body }) => {
         const data = JSON.parse(body);
+        // handles a 404 response
+        if (data._status.code === 404) resolve(array);
+
         let { results } = data;
         results = array.concat(results);
         const { next } = data._links;

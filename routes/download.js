@@ -18,6 +18,7 @@ router.get('/', (req, res) => {
   });
 });
 
+// handles single release download
 router.get('/:release_id', (req, res) => {
   const { release_id } = req.params;
   const params = {
@@ -29,7 +30,7 @@ router.get('/:release_id', (req, res) => {
     .then((body) => {
       // handles if a release does not exist
       if (body.Contents.length === 0) {
-        return res.status(404).json({
+        res.status(404).json({
           message: 'release not found',
         });
       }
@@ -47,7 +48,44 @@ router.get('/:release_id', (req, res) => {
 
       // pipe readStream into gzip
       const gzip = zlib.createGzip();
-      return readStream.pipe(gzip).pipe(res);
+      readStream.pipe(gzip).pipe(res);
+    })
+    .catch((err) => {
+      return res.status(err.statusCode).json(err);
+    });
+});
+
+// handles single study download
+router.get('/:release_id/:study_id', (req, res) => {
+  const { release_id, study_id } = req.params;
+  const params = {
+    Bucket: SNAPSHOT_BUCKET,
+    Prefix: `${release_id}/${study_id}`,
+  };
+
+  listObjectsAsync(params)
+    .then((body) => {
+      // handles if a study does not exist
+      if (body.Contents.length === 0) {
+        res.status(404).json({
+          message: 'study not found',
+        });
+      }
+
+      return getObjectsAsync(params, body.Contents);
+    })
+    .then((obj) => {
+      // set response headers
+      res.attachment(`${study_id}.json.gz`);
+
+      // create a readable object stream
+      const readStream = new Readable();
+      readStream.push(JSON.stringify(obj));
+      readStream.push(null);
+
+      // pipe readStream into gzip
+      const gzip = zlib.createGzip();
+      readStream.pipe(gzip).pipe(res);
     })
     .catch((err) => {
       return res.status(err.statusCode).json(err);
@@ -83,6 +121,7 @@ const listObjectsAsync = (params) => {
 const getObjectsAsync = (params, contents) => {
   return new Promise((resolve, reject) => {
     const obj = {};
+    const prefixes = params.Prefix.split('/');
     delete params.Prefix;
     let count = contents.length;
     contents.forEach((content) => {
@@ -91,7 +130,11 @@ const getObjectsAsync = (params, contents) => {
 
       getObjectAsync(params)
         .then((body) => {
-          nest(obj, Key.split('/'), JSON.parse(body.Body));
+          let keys = Key.split('/');
+          if (prefixes.length === 2) {
+            keys = keys.slice(1, keys.elngth);
+          }
+          nest(obj, keys, JSON.parse(body.Body));
           count -= 1;
           if (count <= 0) resolve(obj);
         })

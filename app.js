@@ -6,7 +6,7 @@ const bodyParser = require('body-parser');
 const logErrors = require('./middlewares/errorHandler');
 const indexRouter = require('./routes/index');
 const tasksRouter = require('./routes/tasks');
-
+const downloadRouter = require('./routes/download');
 
 const app = express();
 
@@ -19,5 +19,6 @@ app.use(logErrors);
 app.use('/', indexRouter);
 app.use('/status', indexRouter);
 app.use('/tasks', tasksRouter);
+app.use('/download', downloadRouter);
 
 module.exports = app;

@@ -77,6 +77,23 @@ describe('Sending a request', () => {
         expect(body).to.equal(data);
       });
     });
+
+    options.uri = '/download/RE_5N9ZMDSM/SD_00000001'
+
+    it('should return statusCode equal to 404', () => {
+      request(options, (err, res) => {
+        expect(res.statusCode).to.equal(404);
+      });
+    });
+
+    data = JSON.stringify({
+      message: 'study not found',
+    });
+    it(`should return body equal to ${data}`, () => {
+      request(options, (err, res, body) => {
+        expect(body).to.equal(data);
+      });
+    });
   });
 });
 

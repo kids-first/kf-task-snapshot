@@ -78,7 +78,7 @@ describe('Sending a request', () => {
       });
     });
 
-    options.uri = '/download/RE_5N9ZMDSM/SD_00000001'
+    options.uri = '/download/RE_5N9ZMDSM/SD_00000001';
 
     it('should return statusCode equal to 404', () => {
       request(options, (err, res) => {

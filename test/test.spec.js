@@ -61,6 +61,7 @@ describe('Sending a request', () => {
       });
     });
 
+    options.qs = { file_format: 'gz' };
     options.uri += '/RE_00000001';
 
     it('should return statusCode equal to 404', () => {

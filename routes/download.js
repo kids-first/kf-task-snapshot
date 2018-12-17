@@ -21,6 +21,8 @@ router.get('/', (req, res) => {
 // handles single release/study download
 router.get('/:release_id/:study_id?', (req, res) => {
   const { release_id, study_id } = req.params;
+  // file_format is set as given if specified else 'gz'
+  const file_format = req.query.file_format || 'gz';
 
   let Prefix;
   if (!study_id) Prefix = `${release_id}`;
@@ -41,7 +43,9 @@ router.get('/:release_id/:study_id?', (req, res) => {
     })
     .then((obj) => {
       // set response headers
-      res.attachment(`${study_id || release_id}.json.gz`);
+      res.attachment(
+        `${study_id || release_id}.json.${file_format}`,
+      );
 
       // create a readable object stream
       const readStream = new Readable();

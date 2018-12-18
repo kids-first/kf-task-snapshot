@@ -13,7 +13,7 @@ require('dotenv').config();
 
 // handles when missing release_id
 router.get('/', (req, res) => {
-  return res.status(400).json({
+  res.status(400).json({
     message: 'missing a required field',
   });
 });
@@ -21,6 +21,18 @@ router.get('/', (req, res) => {
 // handles single release/study download
 router.get('/:release_id/:study_id?', (req, res) => {
   const { release_id, study_id } = req.params;
+  let { file_format } = req.query;
+
+  // validate file_format enums
+  if (file_format === undefined) file_format = 'gz';
+  else {
+    file_format = file_format.toLowerCase();
+    if (['gz', 'zip'].indexOf(file_format) === -1) {
+      return res.status(400).json({
+        message: 'file_format must be one of: gz, zip',
+      });
+    }
+  }
 
   let Prefix;
   if (!study_id) Prefix = `${release_id}`;
@@ -41,7 +53,9 @@ router.get('/:release_id/:study_id?', (req, res) => {
     })
     .then((obj) => {
       // set response headers
-      res.attachment(`${study_id || release_id}.json.gz`);
+      res.attachment(
+        `${study_id || release_id}.json.${file_format}`,
+      );
 
       // create a readable object stream
       const readStream = new Readable();

@@ -84,8 +84,8 @@ router.post('/', async (req, res) => {
   return res.status(200).json(await get_status(task_id));
 });
 
-// define a snapshot cache
-const snapshot = {};
+// declare a snapshot cache
+let snapshot;
 
 // define constants
 const {
@@ -115,6 +115,9 @@ const initialize = (task_id, release_id) => {
     progress: null,
     state: 'pending',
   };
+
+  // initialize a snapshot cache
+  snapshot = {};
 
   return updateState(task_id, data);
 };
@@ -187,6 +190,8 @@ const start = (task_id, release_id) => {
     })
     .catch((err) => {
       updateState(task_id, { state: 'failed' });
+      // flush out if failed
+      snapshot = {};
       console.log(err.message);
     });
 };
@@ -301,6 +306,10 @@ const publish = (task_id, release_id) => {
     .catch((err) => {
       updateState(task_id, { state: 'failed' });
       console.log(err.message);
+    })
+    .finally(() => {
+      // flush out if published or failed
+      snapshot = {};
     });
 };
 
@@ -359,6 +368,8 @@ const putObjectAsync = (params) => {
  * @returns {Object}
  */
 const cancel = async (task_id, release_id) => {
+  // flush out the snapshot cache
+  snapshot = {};
   await updateState(task_id, { state: 'cancelled' });
 };
 

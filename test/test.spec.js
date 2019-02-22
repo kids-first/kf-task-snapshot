@@ -33,7 +33,7 @@ describe('Sending a request', () => {
     data = JSON.stringify({
       message: {
         name: 'snapshot task',
-        version: '1.0.0',
+        version: '1.1.0',
       },
     });
     it(`should return body equal to ${data}`, () => {

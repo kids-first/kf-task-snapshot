@@ -82,8 +82,8 @@ router.post('/', async (req, res) => {
   return res.status(200).json(await get_status(task_id));
 });
 
-// declare a snapshot cache
-let snapshot;
+// define a snapshot cache
+const snapshot = {};
 
 // define constants
 const {
@@ -136,8 +136,8 @@ const initialize = (task_id, release_id) => {
     state: 'pending',
   };
 
-  // initialize a snapshot cache
-  snapshot = {};
+  // initialize a release snapshot
+  snapshot[release_id] = {};
 
   // update task in DynamoDB to pending
   return updateState(task_id, data);
@@ -181,8 +181,7 @@ const start = (task_id, release_id) => {
     .then((studies) => {
       // get and store entities by study
       return Promise.all(studies.map((study) => {
-        const dataOptions = { ...REQUEST_OPTIONS.data };
-        return scrapeByStudy(dataOptions, study);
+        return scrapeByStudy(REQUEST_OPTIONS.data, release_id, study);
       }));
     })
     .then((studies) => {
@@ -211,8 +210,8 @@ const start = (task_id, release_id) => {
       console.log(err.message);
     })
     .finally(() => {
-      // flush out when either staged or failed
-      snapshot = {};
+      // flush out when staged or failed
+      delete snapshot[release_id];
     });
 };
 
@@ -235,7 +234,7 @@ const requestAsync = (options) => {
  * @access private
  * loopRquest() paginates and saves the results
  * @param {Object} options
- * @param {string} next
+ * @param {string} link
  * @param {Object[]} array
  * @returns {Object}
  */
@@ -262,14 +261,15 @@ const loopRequest = (options, link, array) => {
  * @access private
  * scrapeByStudy() collects data by study
  * @param {Object} options
- * @param {Object} study
+ * @param {string} release_id
+ * @param {string} study
  * @returns {string}
  */
-const scrapeByStudy = (options, study) => {
+const scrapeByStudy = (options, release_id, study) => {
   return new Promise((resolve, reject) => {
-    console.log(`START: scraping ${study}`);
+    console.log(`START: scraping ${study} in ${release_id}`);
 
-    snapshot[study] = {};
+    snapshot[release_id][study] = {};
     const entries = Object.entries(ENDPOINTS);
     let count = entries.length;
     entries.forEach((entry) => {
@@ -280,8 +280,8 @@ const scrapeByStudy = (options, study) => {
 
       loopRequest(options, endpoint, [])
         .then((results) => {
-          snapshot[study][entity] = results;
-          const size = snapshot[study][entity].length;
+          snapshot[release_id][study][entity] = results;
+          const size = snapshot[release_id][study][entity].length;
           console.log(`DONE: ${size} ${entity} of ${study}`);
           count -= 1;
           if (count <= 0) resolve(study);
@@ -300,9 +300,9 @@ const scrapeByStudy = (options, study) => {
  */
 const createSnapshot = (release_id, study) => {
   return new Promise((resolve, reject) => {
-    console.log(`START: creating ${study}`);
+    console.log(`START: creating ${study} in ${release_id}`);
 
-    const entries = Object.entries(snapshot[study]);
+    const entries = Object.entries(snapshot[release_id][study]);
     let count = entries.length;
     entries.forEach((entry) => {
       const [entity, data] = entry;
@@ -395,8 +395,8 @@ const next = (array) => { return array; };
  * @returns {Object}
  */
 const cancel = async (task_id, release_id) => {
-  // flush out the snapshot cache
-  snapshot = {};
+  // flush out when cancelled
+  delete snapshot[release_id];
   await updateState(task_id, { state: 'cancelled' });
 };
 

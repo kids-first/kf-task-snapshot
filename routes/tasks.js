@@ -1,5 +1,3 @@
-const fs = require('fs');
-
 const express = require('express');
 const request = require('request');
 const AWS = require('aws-sdk');
@@ -24,7 +22,7 @@ router.post('/', async (req, res) => {
     });
   }
 
-  // if an action is not prediefined, return 400
+  // if an action is not pre-defined, return 400
   if (ACTIONS[action] === undefined) {
     const actions = Object.keys(ACTIONS).join(', ');
     return res.status(400).json({
@@ -99,6 +97,28 @@ const TRANSITIONS = {
   pending: 'start',
   staged: 'publish',
 };
+const REQUEST_OPTIONS = {
+  release: {
+    uri: '/releases',
+    baseUrl: COORDINATOR_API,
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' },
+  },
+  data: {
+    baseUrl: DATASERVICE_API,
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' },
+    qs: { limit: 100, visible: true },
+  },
+  patch: {
+    uri: '/tasks',
+    baseUrl: COORDINATOR_API,
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: { progress: 100, state: null },
+    json: true,
+  },
+};
 
 /**
  * @access public
@@ -116,6 +136,10 @@ const initialize = (task_id, release_id) => {
     state: 'pending',
   };
 
+  // initialize a release snapshot
+  snapshot[release_id] = {};
+
+  // update task in DynamoDB to pending
   return updateState(task_id, data);
 };
 
@@ -146,48 +170,48 @@ const getISOString = (date) => {
  * @returns {Object}
  */
 const start = (task_id, release_id) => {
-  const options = {
-    release: {
-      uri: `/releases/${release_id}`,
-      baseUrl: COORDINATOR_API,
-      method: 'GET',
-      headers: { 'Content-Type': 'application/json' },
-    },
-    data: {
-      baseUrl: DATASERVICE_API,
-      method: 'GET',
-      headers: { 'Content-Type': 'application/json' },
-      qs: { limit: 100, visible: true },
-    },
-    patch: {
-      uri: `/tasks/${task_id}`,
-      baseUrl: COORDINATOR_API,
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: { progress: 100, state: 'staged' },
-      json: true,
-    },
-  };
+  const releaseOptions = { ...REQUEST_OPTIONS.release };
+  releaseOptions.uri += `/${release_id}`;
 
-  requestAsync(options.release)
+  requestAsync(releaseOptions)
     .then(({ res, body }) => {
+      // get study IDs in a given release
       return JSON.parse(body).studies;
     })
     .then((studies) => {
+      // get and store entities by study
       return Promise.all(studies.map((study) => {
-        return scrapeByStudy(options.data, study);
+        return scrapeByStudy(REQUEST_OPTIONS.data, release_id, study);
       }));
     })
-    .then((results) => {
-      console.log(`STAGED: ${results}`);
-      return requestAsync(options.patch);
+    .then((studies) => {
+      // put objects in S3 by study and entity
+      return Promise.all(studies.map((study) => {
+        return createSnapshot(release_id, study);
+      }));
+    })
+    .then((studies) => {
+      // patch task in release coordinator to staged
+      console.log(`STAGED: ${studies.join(', ')}`);
+
+      const patchOptions = { ...REQUEST_OPTIONS.patch };
+      patchOptions.uri += `/${task_id}`;
+      patchOptions.body.state = 'staged';
+
+      return requestAsync(patchOptions);
     })
     .then(() => {
+      // update task in DynamoDB to staged
       updateState(task_id, { state: 'staged' });
     })
     .catch((err) => {
+      // update task in DynamoDB to failed
       updateState(task_id, { state: 'failed' });
       console.log(err.message);
+    })
+    .finally(() => {
+      // flush out when staged or failed
+      delete snapshot[release_id];
     });
 };
 
@@ -210,7 +234,7 @@ const requestAsync = (options) => {
  * @access private
  * loopRquest() paginates and saves the results
  * @param {Object} options
- * @param {string} next
+ * @param {string} link
  * @param {Object[]} array
  * @returns {Object}
  */
@@ -237,14 +261,15 @@ const loopRequest = (options, link, array) => {
  * @access private
  * scrapeByStudy() collects data by study
  * @param {Object} options
- * @param {Object} study
+ * @param {string} release_id
+ * @param {string} study
  * @returns {string}
  */
-const scrapeByStudy = (options, study) => {
+const scrapeByStudy = (options, release_id, study) => {
   return new Promise((resolve, reject) => {
-    console.log(`START: scraping ${study}`);
+    console.log(`START: scraping ${study} in ${release_id}`);
 
-    snapshot[study] = {};
+    snapshot[release_id][study] = {};
     const entries = Object.entries(ENDPOINTS);
     let count = entries.length;
     entries.forEach((entry) => {
@@ -255,8 +280,8 @@ const scrapeByStudy = (options, study) => {
 
       loopRequest(options, endpoint, [])
         .then((results) => {
-          snapshot[study][entity] = results;
-          const size = snapshot[study][entity].length;
+          snapshot[release_id][study][entity] = results;
+          const size = snapshot[release_id][study][entity].length;
           console.log(`DONE: ${size} ${entity} of ${study}`);
           count -= 1;
           if (count <= 0) resolve(study);
@@ -266,56 +291,18 @@ const scrapeByStudy = (options, study) => {
   });
 };
 
-// TODO: change the organization of snapshot structure
-/**
- * @access public
- * publish() publishes a staged snapshot task
- * @param {string} task_id
- * @param {string} release_id
- * @returns {Object}
- */
-const publish = (task_id, release_id) => {
-  const file = `${release_id}.json`;
-  const options = {
-    patch: {
-      uri: `/tasks/${task_id}`,
-      baseUrl: COORDINATOR_API,
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: { progress: 100, state: 'published' },
-      json: true,
-    },
-  };
-
-  const studies = Object.keys(snapshot);
-  Promise.all(studies.map((study) => {
-    return createSnapshot(release_id, study);
-  }))
-    .then((results) => {
-      console.log(`Successfully created ${results}`);
-      return requestAsync(options.patch);
-    })
-    .then(() => {
-      updateState(task_id, { state: 'published' });
-    })
-    .catch((err) => {
-      updateState(task_id, { state: 'failed' });
-      console.log(err.message);
-    });
-};
-
 /**
  * @access private
- * createSnapshot() creates a snapshot by release_id and study
+ * createSnapshot() creates a snapshot by study and entity
  * @param {string} release_id
  * @param {string} study
  * @returns {Object}
  */
 const createSnapshot = (release_id, study) => {
   return new Promise((resolve, reject) => {
-    console.log(`START: creating ${study}`);
+    console.log(`START: creating ${study} in ${release_id}`);
 
-    const entries = Object.entries(snapshot[study]);
+    const entries = Object.entries(snapshot[release_id][study]);
     let count = entries.length;
     entries.forEach((entry) => {
       const [entity, data] = entry;
@@ -353,12 +340,63 @@ const putObjectAsync = (params) => {
 
 /**
  * @access public
+ * publish() publishes a staged snapshot task
+ * @param {string} task_id
+ * @param {string} release_id
+ * @returns {Object}
+ */
+const publish = (task_id, release_id) => {
+  const releaseOptions = { ...REQUEST_OPTIONS.release };
+  releaseOptions.uri += `/${release_id}`;
+
+  requestAsync(releaseOptions)
+    .then(({ res, body }) => {
+      // get study IDs in a given release
+      return JSON.parse(body).studies;
+    })
+    .then((studies) => {
+      // TODO: add a proper publishing function
+      return next(studies);
+    })
+    .then((studies) => {
+      // patch task in release coordinator to published
+      console.log(`PUBLISHED: ${studies.join(', ')}`);
+
+      const patchOptions = { ...REQUEST_OPTIONS.patch };
+      patchOptions.uri += `/${task_id}`;
+      patchOptions.body.state = 'published';
+
+      return requestAsync(patchOptions);
+    })
+    .then(() => {
+      // update task in DynamoDB to published
+      updateState(task_id, { state: 'published' });
+    })
+    .catch((err) => {
+      // update task in DynamoDB to failed
+      updateState(task_id, { state: 'failed' });
+      console.log(err.message);
+    });
+};
+
+/**
+ * @access private
+ * next() is a placeholding function
+ * @param {Object[]} array
+ * @returns {Object}
+ */
+const next = (array) => { return array; };
+
+/**
+ * @access public
  * cancel() terminates a snapshot task
  * @param {string} task_id
  * @param {string} release_id
  * @returns {Object}
  */
 const cancel = async (task_id, release_id) => {
+  // flush out when cancelled
+  delete snapshot[release_id];
   await updateState(task_id, { state: 'cancelled' });
 };
 

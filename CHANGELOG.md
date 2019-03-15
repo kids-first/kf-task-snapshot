@@ -1,4 +1,20 @@
-# Kids First Snapshot Task Release 1.1.0
+# Kids First Task Snapshot Release 1.2.0
+
+## Features
+
+### Summary
+
+Feature Emojis: 🐛x1 x1 ♻️x1
+Feature Labels: [bug](https://api.github.com/repos/kids-first/kf-task-snapshot/labels/bug) x1 [feature](https://api.github.com/repos/kids-first/kf-task-snapshot/labels/feature) x1 [refactor](https://api.github.com/repos/kids-first/kf-task-snapshot/labels/refactor) x1
+
+### New features and changes
+
+- (#43) 🐛 Debug snapshot object storage - @liberaliscomputing
+- (#40)  🎉 Handle file format query - @liberaliscomputing
+- (#39) ♻️ Refactor single study download - @liberaliscomputing
+
+
+# Kids First Task Snapshot Release 1.1.0
 
 ## Features
 
@@ -13,7 +29,7 @@ Feature Labels: [feature](https://api.github.com/repos/kids-first/kf-task-snapsh
 - (#28) 🚧 Debug staging failure - @liberaliscomputing
 
 
-# Kids First Snapshot Task Release 1.0.0
+# Kids First Task Snapshot Release 1.0.0
 
 ## Features
 

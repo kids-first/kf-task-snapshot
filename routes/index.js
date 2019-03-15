@@ -7,7 +7,7 @@ router.get('/', (req, res) => {
   res.status(200).json({
     message: {
       name: 'snapshot task',
-      version: '1.1.0',
+      version: '1.2.0',
     },
   });
 });
